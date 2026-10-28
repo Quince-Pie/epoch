@@ -208,11 +208,46 @@
             # Also find the project root in copies without Git metadata.
             settings.tree-root-file = "flake.nix";
           };
+          epochSrc = lib.cleanSourceWith {
+            src = ./.;
+            filter =
+              path: _type:
+              let
+                rel = lib.removePrefix (toString ./. + "/") (toString path);
+              in
+              !(
+                rel == "target"
+                || lib.hasPrefix "target/" rel
+                || rel == "benchmarks/results"
+                || lib.hasPrefix "benchmarks/results/" rel
+                || rel == ".git"
+                || lib.hasPrefix ".git/" rel
+              );
+          };
+          epochPkg = pkgs.rustPlatform.buildRustPackage {
+            pname = "epoch";
+            version = "0.1.0";
+            src = epochSrc;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [
+              pkgs.sqlite
+              pkgs.zstd
+            ]
+            ++ lib.optional pkgs.stdenv.hostPlatform.isDarwin pkgs.libiconv;
+            doCheck = false;
+            meta = {
+              description = "Distributed transactional NixOS fleet deployment engine";
+              mainProgram = "epoch";
+              platforms = systems;
+            };
+          };
         in
         {
           inherit
             toolchains
             proxy
+            epochPkg
             formatter
             ;
           shell = pkgs.mkShell {
@@ -276,12 +311,29 @@
       packages = forAllSystems (
         system:
         {
-          default = perSystem.${system}.proxy;
+          default = perSystem.${system}.epochPkg;
+          epoch = perSystem.${system}.epochPkg;
+          epoch-agent = perSystem.${system}.epochPkg;
+          rust-proxy = perSystem.${system}.proxy;
         }
         // lib.mapAttrs' (
           name: value: lib.nameValuePair "rust-${name}" value
         ) perSystem.${system}.toolchains
       );
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${perSystem.${system}.epochPkg}/bin/epoch";
+        };
+        epoch = {
+          type = "app";
+          program = "${perSystem.${system}.epochPkg}/bin/epoch";
+        };
+        epoch-agent = {
+          type = "app";
+          program = "${perSystem.${system}.epochPkg}/bin/epoch-agent";
+        };
+      });
       formatter = forAllSystems (system: perSystem.${system}.formatter);
     };
 }
