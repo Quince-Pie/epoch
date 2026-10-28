@@ -1,0 +1,426 @@
+{
+  "plane1_eval": {
+    "nix_eval_runs": [
+      {
+        "tool": "epoch",
+        "nodes": 4,
+        "wall_ms": 8118.470324000001,
+        "peak_rss_mib": 1578.0625,
+        "drv_paths_evaluated": 4,
+        "plaintext_secret_leaks_in_stdout": 0,
+        "static_quorum_verified": true,
+        "static_dag_toposorted": true
+      },
+      {
+        "tool": "colmena",
+        "nodes": 4,
+        "wall_ms": 7762.721200999999,
+        "peak_rss_mib": 1555.59375,
+        "drv_paths_evaluated": 4,
+        "plaintext_secret_leaks_in_stdout": 8,
+        "static_quorum_verified": false,
+        "static_dag_toposorted": false
+      },
+      {
+        "tool": "deploy-rs",
+        "nodes": 4,
+        "wall_ms": 6692.375206999999,
+        "peak_rss_mib": 1539.26953125,
+        "drv_paths_evaluated": 4,
+        "plaintext_secret_leaks_in_stdout": 0,
+        "static_quorum_verified": false,
+        "static_dag_toposorted": false
+      },
+      {
+        "tool": "epoch",
+        "nodes": 8,
+        "wall_ms": 6824.157793,
+        "peak_rss_mib": 1578.2265625,
+        "drv_paths_evaluated": 8,
+        "plaintext_secret_leaks_in_stdout": 0,
+        "static_quorum_verified": true,
+        "static_dag_toposorted": true
+      },
+      {
+        "tool": "colmena",
+        "nodes": 8,
+        "wall_ms": 11325.183923999999,
+        "peak_rss_mib": 2866.49609375,
+        "drv_paths_evaluated": 8,
+        "plaintext_secret_leaks_in_stdout": 16,
+        "static_quorum_verified": false,
+        "static_dag_toposorted": false
+      },
+      {
+        "tool": "deploy-rs",
+        "nodes": 8,
+        "wall_ms": 11283.377148,
+        "peak_rss_mib": 2914.14453125,
+        "drv_paths_evaluated": 8,
+        "plaintext_secret_leaks_in_stdout": 0,
+        "static_quorum_verified": false,
+        "static_dag_toposorted": false
+      }
+    ],
+    "nix_eval_scaling_slopes": [
+      {
+        "tool": "epoch",
+        "min_nodes": 4,
+        "max_nodes": 8,
+        "marginal_ms_per_node": -323.5781327500001,
+        "marginal_rss_mib_per_node": 0.041015625,
+        "total_secret_leaks_at_max_n": 0
+      },
+      {
+        "tool": "colmena",
+        "min_nodes": 4,
+        "max_nodes": 8,
+        "marginal_ms_per_node": 890.6156807499999,
+        "marginal_rss_mib_per_node": 327.7255859375,
+        "total_secret_leaks_at_max_n": 16
+      },
+      {
+        "tool": "deploy-rs",
+        "min_nodes": 4,
+        "max_nodes": 8,
+        "marginal_ms_per_node": 1147.75048525,
+        "marginal_rss_mib_per_node": 343.71875,
+        "total_secret_leaks_at_max_n": 0
+      }
+    ],
+    "worker_pool_scaling": [
+      {
+        "nodes": 10,
+        "archetypes": 8,
+        "workers": 4,
+        "cold_eval_ms": 1.620409,
+        "warm_eval_1_node_changed_ms": 0.8182149999999999,
+        "warm_speedup_factor": 1.9804195718729187,
+        "warm_cache_hits": 9,
+        "warm_worker_evals": 1,
+        "worker_recycles": 1,
+        "parent_rss_mib": 14.375,
+        "peak_worker_rss_mib": 14.3046875,
+        "rss_ceiling_respected": true
+      },
+      {
+        "nodes": 100,
+        "archetypes": 8,
+        "workers": 4,
+        "cold_eval_ms": 5.686307,
+        "warm_eval_1_node_changed_ms": 1.157841,
+        "warm_speedup_factor": 4.911129421051768,
+        "warm_cache_hits": 99,
+        "warm_worker_evals": 1,
+        "worker_recycles": 2,
+        "parent_rss_mib": 14.828125,
+        "peak_worker_rss_mib": 14.56640625,
+        "rss_ceiling_respected": true
+      },
+      {
+        "nodes": 500,
+        "archetypes": 8,
+        "workers": 4,
+        "cold_eval_ms": 14.493215000000001,
+        "warm_eval_1_node_changed_ms": 2.955266,
+        "warm_speedup_factor": 4.904199824990374,
+        "warm_cache_hits": 499,
+        "warm_worker_evals": 1,
+        "worker_recycles": 8,
+        "parent_rss_mib": 16.88671875,
+        "peak_worker_rss_mib": 15.5625,
+        "rss_ceiling_respected": true
+      },
+      {
+        "nodes": 1000,
+        "archetypes": 8,
+        "workers": 4,
+        "cold_eval_ms": 29.476992,
+        "warm_eval_1_node_changed_ms": 5.196026000000001,
+        "warm_speedup_factor": 5.672987779506876,
+        "warm_cache_hits": 999,
+        "warm_worker_evals": 1,
+        "worker_recycles": 16,
+        "parent_rss_mib": 19.765625,
+        "peak_worker_rss_mib": 17.1015625,
+        "rss_ceiling_respected": true
+      }
+    ]
+  },
+  "plane2_transport": {
+    "deduplication": {
+      "nar_size_bytes": 2097600,
+      "whole_nar_zstd_bytes": 2096227,
+      "binary_delta_bytes": 4096,
+      "embedded_store_refs_rewritten": 512,
+      "unnormalized_fastcdc_total_chunks": 53,
+      "unnormalized_fastcdc_reused_chunks": 0,
+      "unnormalized_fastcdc_dedup_ratio_pct": 0.0,
+      "epoch_normalized_total_chunks": 52,
+      "epoch_normalized_reused_chunks": 51,
+      "epoch_normalized_dedup_ratio_pct": 98.07692307692308,
+      "epoch_delta_zstd_bytes_per_node": 51015
+    },
+    "fleet_scaling": [
+      {
+        "nodes": 10,
+        "racks": 10,
+        "fanout_k": 4,
+        "tree_max_depth": 1,
+        "deploy_rs_seq_star_push_raw_bytes": 20976000,
+        "deploy_rs_seq_star_push_zstd_bytes": 20962270,
+        "colmena_par_star_push_raw_bytes": 20976000,
+        "colmena_par_star_push_zstd_bytes": 20962270,
+        "epoch_coordinator_egress_bytes": 510150,
+        "epoch_peer_mesh_forwarded_bytes": 0,
+        "egress_reduction_vs_raw_nar_x": 41.11731843575419,
+        "egress_reduction_vs_zstd_nar_x": 41.09040478290699,
+        "simulated_1gbps_star_push_ms": 168.19816,
+        "simulated_1gbps_epoch_p2p_ms": 4.5812,
+        "simulated_1gbps_speedup_x": 36.714869466515324,
+        "in_memory_tree_engine_ms": 0.098036
+      },
+      {
+        "nodes": 50,
+        "racks": 25,
+        "fanout_k": 4,
+        "tree_max_depth": 2,
+        "deploy_rs_seq_star_push_raw_bytes": 104880000,
+        "deploy_rs_seq_star_push_zstd_bytes": 104811350,
+        "colmena_par_star_push_raw_bytes": 104880000,
+        "colmena_par_star_push_zstd_bytes": 104811350,
+        "epoch_coordinator_egress_bytes": 1275375,
+        "epoch_peer_mesh_forwarded_bytes": 1275375,
+        "egress_reduction_vs_raw_nar_x": 82.23463687150839,
+        "egress_reduction_vs_zstd_nar_x": 82.18080956581397,
+        "simulated_1gbps_star_push_ms": 840.9908,
+        "simulated_1gbps_epoch_p2p_ms": 12.83548,
+        "simulated_1gbps_speedup_x": 65.52079080797914,
+        "in_memory_tree_engine_ms": 0.640237
+      },
+      {
+        "nodes": 100,
+        "racks": 25,
+        "fanout_k": 4,
+        "tree_max_depth": 2,
+        "deploy_rs_seq_star_push_raw_bytes": 209760000,
+        "deploy_rs_seq_star_push_zstd_bytes": 209622700,
+        "colmena_par_star_push_raw_bytes": 209760000,
+        "colmena_par_star_push_zstd_bytes": 209622700,
+        "epoch_coordinator_egress_bytes": 1275375,
+        "epoch_peer_mesh_forwarded_bytes": 3826125,
+        "egress_reduction_vs_raw_nar_x": 164.46927374301677,
+        "egress_reduction_vs_zstd_nar_x": 164.36161913162795,
+        "simulated_1gbps_star_push_ms": 1681.9816,
+        "simulated_1gbps_epoch_p2p_ms": 12.83548,
+        "simulated_1gbps_speedup_x": 131.04158161595828,
+        "in_memory_tree_engine_ms": 1.456698
+      },
+      {
+        "nodes": 500,
+        "racks": 25,
+        "fanout_k": 4,
+        "tree_max_depth": 3,
+        "deploy_rs_seq_star_push_raw_bytes": 1048800000,
+        "deploy_rs_seq_star_push_zstd_bytes": 1048113500,
+        "colmena_par_star_push_raw_bytes": 1048800000,
+        "colmena_par_star_push_zstd_bytes": 1048113500,
+        "epoch_coordinator_egress_bytes": 1275375,
+        "epoch_peer_mesh_forwarded_bytes": 24232125,
+        "egress_reduction_vs_raw_nar_x": 822.3463687150838,
+        "egress_reduction_vs_zstd_nar_x": 821.8080956581398,
+        "simulated_1gbps_star_push_ms": 8409.908,
+        "simulated_1gbps_epoch_p2p_ms": 14.96796,
+        "simulated_1gbps_speedup_x": 561.8606677195824,
+        "in_memory_tree_engine_ms": 8.85546
+      },
+      {
+        "nodes": 1000,
+        "racks": 25,
+        "fanout_k": 4,
+        "tree_max_depth": 4,
+        "deploy_rs_seq_star_push_raw_bytes": 2097600000,
+        "deploy_rs_seq_star_push_zstd_bytes": 2096227000,
+        "colmena_par_star_push_raw_bytes": 2097600000,
+        "colmena_par_star_push_zstd_bytes": 2096227000,
+        "epoch_coordinator_egress_bytes": 1275375,
+        "epoch_peer_mesh_forwarded_bytes": 49739625,
+        "egress_reduction_vs_raw_nar_x": 1644.6927374301677,
+        "egress_reduction_vs_zstd_nar_x": 1643.6161913162796,
+        "simulated_1gbps_star_push_ms": 16819.816,
+        "simulated_1gbps_epoch_p2p_ms": 17.10044,
+        "simulated_1gbps_speedup_x": 983.5896620203924,
+        "in_memory_tree_engine_ms": 18.309999
+      }
+    ],
+    "live_quic_mtls_transfer": {
+      "cohort_nodes": 4,
+      "epoch_delta_wire_bytes_per_node": 202026,
+      "whole_nar_wire_bytes_per_node": 1005094,
+      "epoch_quic_mtls_delta_stage_ms": 126.193375,
+      "incumbent_whole_nar_stage_ms": 139.658324,
+      "wire_reduction_factor_x": 4.975072515418807
+    }
+  },
+  "plane34_fault_and_footprint": {
+    "target_footprint": {
+      "epoch_agent_vm_rss_mib": 127.72265625,
+      "epoch_agent_stripped_binary_mib": 3.20111083984375,
+      "epoch_agent_within_5mb_target": true,
+      "epoch_agent_mlockall_supported": true,
+      "epoch_agent_oom_score_adj": -1000,
+      "epoch_agent_rollback_subprocesses_spawned": 0,
+      "deploy_rs_activate_rs_rollback_subprocesses_spawned": 4,
+      "colmena_per_key_inotifywait_daemons_for_10_keys": 10
+    },
+    "secret_swap_skew": {
+      "rotations_tested": 50,
+      "concurrent_reader_samples": 277042,
+      "colmena_pre_activation_skew_samples": 20,
+      "colmena_pre_activation_skew_rate_pct": 100.0,
+      "colmena_post_failed_activation_secret_corrupted": true,
+      "colmena_post_activation_deadlock_confirmed": true,
+      "colmena_unattended_reboot_secret_survived": false,
+      "epoch_rename_exchange_enoent_errors": 0,
+      "epoch_rename_exchange_torn_reads": 0,
+      "epoch_pre_activation_skew_samples": 0,
+      "epoch_post_failed_activation_secret_corrupted": false,
+      "epoch_retired_generation_zero_wiped": true,
+      "epoch_unattended_reboot_secret_survived": true,
+      "epoch_avg_rename_exchange_flip_us": 24.27378
+    },
+    "gate4_fault_comparisons": [
+      {
+        "scenario_id": "Gate-4.1",
+        "title": "Coordinator SIGKILL Mid-DAG Rollout (W1 committed, W2 in BARRIER_WAIT)",
+        "epoch_outcome": "W1 stays G_42; W2 lease expires at 30s -> 100% ROLLED_BACK to G_41; zombie fenced",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 304.531621,
+        "deploy_rs_outcome": "Node 1 disarmed magicRollback before Node 2 started (src/cli.rs:923) -> Permanent Split-Brain",
+        "deploy_rs_split_brain_nodes": 2,
+        "colmena_outcome": "No rollback state machine -> Permanent Split-Brain + corrupted /run/keys",
+        "colmena_split_brain_nodes": 2,
+        "colmena_secret_skew_nodes": 3
+      },
+      {
+        "scenario_id": "Gate-4.2A",
+        "title": "Asymmetric Management Partition (Coord <-> N1 dropped; Peer Mesh intact)",
+        "epoch_outcome": "N2 relays N1 HealthAttestation + CommitWave(50) via PeerWitnessRelay -> 100% COMMITTED",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 175.8933405,
+        "deploy_rs_outcome": "ssh_wait_child / confirm_profile drops (src/deploy.rs:695) -> False Rollback on N1 (Split-Brain)",
+        "deploy_rs_split_brain_nodes": 1,
+        "colmena_outcome": "SSH session drops mid-apply -> Partial wave failure / Split-Brain",
+        "colmena_split_brain_nodes": 1,
+        "colmena_secret_skew_nodes": 1
+      },
+      {
+        "scenario_id": "Gate-4.2B",
+        "title": "Asymmetric Data-Plane Blackhole (Mgmt SSH intact; eth1 Peer Mesh severed)",
+        "epoch_outcome": "N1 detects DataPlaneMeshIsolated (peers=1 < quorum=2) -> AbortWave(51) -> 100% ROLLED_BACK",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 175.8933405,
+        "deploy_rs_outcome": "activate-rs wait only checks /tmp canary over mgmt SSH -> Commits broken isolated node",
+        "deploy_rs_split_brain_nodes": 1,
+        "colmena_outcome": "switch-to-configuration exits 0 over mgmt SSH -> Commits broken isolated node",
+        "colmena_split_brain_nodes": 1,
+        "colmena_secret_skew_nodes": 0
+      },
+      {
+        "scenario_id": "Gate-4.3",
+        "title": "Reboot into Broken Kernel / Initrd Panic",
+        "epoch_outcome": "Watchdog reset + systemd-boot +1-0 -> +0-1 fallback to G_10 + Stage-2 unseal-boot -> 100% Recovered",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 105.483695,
+        "deploy_rs_outcome": "sed -i '/^default /d' loader.conf (flake.nix:112) + userspace timer dies -> Permanently Bricked",
+        "deploy_rs_split_brain_nodes": 1,
+        "colmena_outcome": "No boot-counting or watchdog + /run/keys wiped on tmpfs -> Permanently Bricked",
+        "colmena_split_brain_nodes": 1,
+        "colmena_secret_skew_nodes": 1
+      },
+      {
+        "scenario_id": "Gate-4.4",
+        "title": "Partial Closure BLAKE3 Bit-Flip & /nix/store statvfs ENOSPC",
+        "epoch_outcome": "statvfs rejects ENOSPC pre-write; BLAKE3 bit-flip strikes faulty parent & recovers from fallback",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 26.878843999999997,
+        "deploy_rs_outcome": "Defaults to --no-check-sigs (src/cli.rs:41); no statvfs reserve guard before nix copy",
+        "deploy_rs_split_brain_nodes": 1,
+        "colmena_outcome": "Hardcodes --no-check-sigs (src/nix/host/ssh.rs:293); no statvfs reserve guard",
+        "colmena_split_brain_nodes": 1,
+        "colmena_secret_skew_nodes": 0
+      },
+      {
+        "scenario_id": "Gate-4.5",
+        "title": "Canary Unit Failure on Node k in Coupled Wave After Speculative Activation",
+        "epoch_outcome": "N1..N4 held in BARRIER_WAIT; N5 unit fails -> AbortWave(77) reverts cohort to G_76 & zero-wipes gen-77",
+        "epoch_split_brain_nodes": 0,
+        "epoch_secret_skew_nodes": 0,
+        "epoch_execution_ms": 305.131712,
+        "deploy_rs_outcome": "N1..N4 already confirmed & disarmed timer; if revoke SSH fails on any node (src/cli.rs:965) -> Split-Brain",
+        "deploy_rs_split_brain_nodes": 4,
+        "colmena_outcome": "N1..N4 remain committed at G_77; N5 left with G_77 secrets in /run/keys -> Split-Brain + Secret Skew",
+        "colmena_split_brain_nodes": 4,
+        "colmena_secret_skew_nodes": 1
+      }
+    ],
+    "gate4_verification_reports": [
+      {
+        "scenario_id": "Gate-4.1",
+        "title": "Coordinator Crash (SIGKILL / Power Loss) Mid-DAG Rollout",
+        "passed": true,
+        "invariants_verified": [
+          "W1 (N1, N2) remains committed at G_42 with gen-41 secrets zero-wiped",
+          "W2 (N3, N4 in BARRIER_WAIT; N5 in PREPARED) deterministically converges to ROLLED_BACK (G_41) at t=32.1s",
+          "RENAME_EXCHANGE restores /run/epoch/current-secrets -> gen-41 and zero-wipes gen-42 on N3, N4, N5",
+          "Zombie coordinator replaying tx_epoch <= 42 is rejected with StaleEpochFenced"
+        ]
+      },
+      {
+        "scenario_id": "Gate-4.2",
+        "title": "Asymmetric Network Partition (Case 2A Management Flap & Case 2B Data-Plane Blackhole)",
+        "passed": true,
+        "invariants_verified": [
+          "Case 2A: N1 commits G_50 via PeerWitnessRelay through N2 with zero false rollback despite 100% Coordinator<->N1 packet loss",
+          "Case 2B: N1 detects DataPlaneMeshIsolated (reachable_peers=1 < quorum=2), self-aborts to G_50, and triggers AbortWave across N2 & N3"
+        ]
+      },
+      {
+        "scenario_id": "Gate-4.3",
+        "title": "Reboot into Broken Kernel / Initrd Panic -> 3-Layer Hardware Watchdog + systemd-boot +1 Recovery",
+        "passed": true,
+        "invariants_verified": [
+          "systemd-boot renames nixos-generation-11+1-0.conf -> +0-1.conf on Reboot #1 while preserving default nixos-generation-10.conf",
+          "After initrd panic and 60s hardware watchdog reset, Reboot #2 skips +0-1.conf (0 tries left) and boots G_10",
+          "Stage-2 early-boot unseal recovers G_10 secrets into ramfs (/run/epoch/secrets/gen-10) with 0 coordinator interaction",
+          "Layer-3 state.cbor reconciliation cleans up +0-1.conf and tx-11 GC root and transitions N1 to ROLLED_BACK"
+        ]
+      },
+      {
+        "scenario_id": "Gate-4.4",
+        "title": "Partial Closure Corruption (BLAKE3 Mismatch) & /nix/store statvfs ENOSPC Guard",
+        "passed": true,
+        "invariants_verified": [
+          "Trace 4A: statvfs quota pre-check rejects StageManifest with StoreQuotaExceeded before writing 1 byte",
+          "Trace 4B: P2P child detects BLAKE3 bit-flip on decompressed chunk, strikes parent peer N1, and recovers from fallback",
+          "Tampered full-NAR SHA-256 / store_sig is rejected with NarIntegrityMismatch before SQLite db.sqlite registration"
+        ]
+      },
+      {
+        "scenario_id": "Gate-4.5",
+        "title": "Canary Failure on Node k in Coupled Wave After Speculative Activation -> Sub-Second Cohort Rollback",
+        "passed": true,
+        "invariants_verified": [
+          "N1..N4 hold in BARRIER_WAIT under active CLOCK_BOOTTIME lease without mutating /nix/var/nix/profiles/system",
+          "N5 detects UnitFailed: payment-engine.service, rolls back to G_76, and gossips signed negative HealthAttestation",
+          "100% of {N1, N2, N3, N4, N5} revert closures & /run/epoch/current-secrets (RENAME_EXCHANGE) to G_76 and zero-wipe gen-77"
+        ]
+      }
+    ]
+  }
+}

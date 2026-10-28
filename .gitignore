@@ -1,0 +1,5 @@
+/target
+/benchmarks/results/*.tracy
+/benchmarks/results/*.lock
+/benchmarks/results/*.log
+/benchmarks/results/*.cbor
