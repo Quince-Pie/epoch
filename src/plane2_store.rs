@@ -826,7 +826,9 @@ pub fn check_store_quota(
     missing_manifests: &[&NarChunkManifest],
     reserve_override_bytes: Option<u64>,
 ) -> Result<(), EpochError> {
-    fs::create_dir_all(store_dir)?;
+    if !store_dir.exists() {
+        fs::create_dir_all(store_dir)?;
+    }
     let c_path = CString::new(store_dir.as_os_str().as_bytes())
         .map_err(|e| EpochError::Io(e.to_string()))?;
 
@@ -1083,7 +1085,10 @@ pub fn reconstruct_and_register_store_path(
     }
 
     // 4. Unpack into `.epoch-tmp-<hash>` inside `store_root` and atomically rename to target
-    fs::create_dir_all(store_root)?;
+    set_nix_store_writable(store_root, true);
+    if !store_root.exists() {
+        fs::create_dir_all(store_root)?;
+    }
     let store_basename = Path::new(&manifest.store_path)
         .file_name()
         .ok_or_else(|| EpochError::Io(format!("invalid store_path {}", manifest.store_path)))?;
@@ -1113,6 +1118,27 @@ pub fn reconstruct_and_register_store_path(
     register_valid_path_sqlite(sqlite_db_path, manifest)?;
 
     Ok(final_path)
+}
+
+/// Remount `/nix/store` read-write (`writable = true`) or read-only (`writable = false`)
+/// when running as root on a live NixOS system with `nix.readOnlyStore = true`.
+pub fn set_nix_store_writable(store_root: &Path, writable: bool) {
+    if store_root == Path::new("/nix/store") {
+        let flags = if writable {
+            libc::MS_REMOUNT | libc::MS_BIND
+        } else {
+            libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY
+        };
+        unsafe {
+            let _ = libc::mount(
+                std::ptr::null(),
+                c"/nix/store".as_ptr(),
+                std::ptr::null(),
+                flags,
+                std::ptr::null(),
+            );
+        }
+    }
 }
 
 /// Remove a read-only store directory tree by temporarily restoring `u+w` on directories.
@@ -1363,6 +1389,104 @@ pub fn query_valid_path_and_refs_sqlite(
         }
         Ok((vp_count > 0, refs_count))
     })
+}
+
+/// Checkpoint the SQLite WAL file and close the cached handle for `sqlite_db_path` so external
+/// `nix-store` / `switch-to-configuration` processes observe newly registered paths immediately.
+pub fn flush_sqlite_conn_cache(sqlite_db_path: &Path) {
+    let mut cache = SQLITE_CONN_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for entry in cache.iter() {
+        if entry.path == sqlite_db_path && !entry.db.is_null() {
+            unsafe {
+                let _ = exec_sql(entry.db, "PRAGMA wal_checkpoint(TRUNCATE);");
+            }
+        }
+    }
+    cache.retain(|entry| entry.path != sqlite_db_path);
+}
+
+/// Return all store paths from `store_paths` that are either missing on disk in `store_dir`
+/// or not registered with a real SHA-256 hash in `ValidPaths` (`sqlite_db_path`).
+pub fn query_missing_store_paths(
+    store_dir: &Path,
+    sqlite_db_path: &Path,
+    store_paths: &[String],
+) -> Result<Vec<String>, EpochError> {
+    if store_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !sqlite_db_path.exists() {
+        return Ok(store_paths.to_vec());
+    }
+
+    unsafe extern "C" fn collect_path_cb(
+        arg: *mut libc::c_void,
+        argc: libc::c_int,
+        argv: *mut *mut libc::c_char,
+        _col_names: *mut *mut libc::c_char,
+    ) -> libc::c_int {
+        if argc >= 1 && !argv.is_null() {
+            let val_ptr = unsafe { *argv };
+            if !val_ptr.is_null() {
+                let s = unsafe { std::ffi::CStr::from_ptr(val_ptr) }
+                    .to_string_lossy()
+                    .into_owned();
+                let set = unsafe { &mut *(arg as *mut std::collections::BTreeSet<String>) };
+                set.insert(s);
+            }
+        }
+        0
+    }
+
+    let mut valid_in_db = std::collections::BTreeSet::new();
+    with_sqlite_conn(sqlite_db_path, |db| unsafe {
+        for chunk in store_paths.chunks(500) {
+            let mut sql = String::from(
+                "SELECT path FROM ValidPaths WHERE hash != 'sha256:0000000000000000000000000000000000000000000000000000000000000000' AND path IN (",
+            );
+            for (idx, p) in chunk.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
+                }
+                sql.push('\'');
+                sql.push_str(&p.replace('\'', "''"));
+                sql.push('\'');
+            }
+            sql.push_str(");");
+            let c_sql = CString::new(sql).map_err(|e| EpochError::Io(e.to_string()))?;
+            let mut errmsg: *mut libc::c_char = std::ptr::null_mut();
+            let rc = sqlite3_exec(
+                db,
+                c_sql.as_ptr(),
+                Some(collect_path_cb),
+                (&mut valid_in_db as *mut std::collections::BTreeSet<String>) as *mut libc::c_void,
+                &mut errmsg,
+            );
+            if !errmsg.is_null() {
+                sqlite3_free(errmsg as *mut libc::c_void);
+            }
+            if rc != 0 {
+                return Err(EpochError::Io(
+                    "sqlite3 ValidPaths batch query failed".into(),
+                ));
+            }
+        }
+        Ok(())
+    })?;
+
+    let mut missing = Vec::new();
+    for p in store_paths {
+        let on_disk = Path::new(p)
+            .file_name()
+            .map(|base| store_dir.join(base).exists())
+            .unwrap_or(false);
+        if !on_disk || !valid_in_db.contains(p) {
+            missing.push(p.clone());
+        }
+    }
+    Ok(missing)
 }
 
 unsafe fn exec_sql(db: *mut libc::c_void, sql: &str) -> Result<(), EpochError> {

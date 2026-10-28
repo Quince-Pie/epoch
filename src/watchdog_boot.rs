@@ -134,7 +134,7 @@ pub fn arm_systemd_boot_single_trial(
 ) -> Result<PathBuf, EpochError> {
     let entries_dir = boot_root.join("loader").join("entries");
     fs::create_dir_all(&entries_dir)?;
-    fs::create_dir_all(efivars_dir)?;
+    let _ = fs::create_dir_all(efivars_dir);
 
     let trial_name = format!("nixos-generation-{tx_epoch}+1-0.conf");
     let trial_path = entries_dir.join(&trial_name);
@@ -147,11 +147,13 @@ pub fn arm_systemd_boot_single_trial(
         f.sync_all()?;
     }
 
-    let oneshot_var = efivars_dir.join("LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f");
-    {
-        let mut f = File::create(&oneshot_var)?;
-        f.write_all(format!("{trial_name}\0").as_bytes())?;
-        f.sync_all()?;
+    if efivars_dir.exists() {
+        let oneshot_var =
+            efivars_dir.join("LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f");
+        if let Ok(mut f) = File::create(&oneshot_var) {
+            let _ = f.write_all(format!("{trial_name}\0").as_bytes());
+            let _ = f.sync_all();
+        }
     }
 
     Ok(trial_path)

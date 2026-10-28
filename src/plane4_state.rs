@@ -15,12 +15,13 @@ use crate::crypto::{
 };
 use crate::oracles::{ProbeEnvironment, evaluate_health_oracles};
 use crate::plane2_store::{
-    TargetChunkIndex, check_store_quota, create_staging_gcroot, ingest_fetched_chunks,
-    reconstruct_and_register_store_path, remove_staging_gcroot,
+    TargetChunkIndex, check_store_quota, create_staging_gcroot, flush_sqlite_conn_cache,
+    ingest_fetched_chunks, query_missing_store_paths, reconstruct_and_register_store_path,
+    remove_staging_gcroot, set_nix_store_writable,
 };
 use crate::plane3_secrets::{
-    atomic_flip_current_secrets, prepare_generation_secrets, unseal_boot_secrets,
-    zero_wipe_secret_generation,
+    atomic_flip_current_secrets, prepare_empty_generation_secrets, prepare_generation_secrets,
+    unseal_boot_secrets, zero_wipe_secret_generation,
 };
 use crate::schema::{
     AgentPhase, Blake3Hash, Ed25519Pub, Ed25519Sig, EpochError, EpochWireMsg, NarChunkManifest,
@@ -37,7 +38,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Read the Linux kernel's monotonic `CLOCK_BOOTTIME` in nanoseconds (ticks across suspend).
 pub fn clock_boottime_ns() -> u64 {
@@ -117,10 +118,12 @@ impl AgentFilesystemLayout {
             &self.profiles_dir,
             &self.ramfs_secrets_root,
             &self.boot_root,
-            &self.efivars_dir,
         ] {
-            fs::create_dir_all(dir)?;
+            if !dir.exists() {
+                fs::create_dir_all(dir)?;
+            }
         }
+        let _ = fs::create_dir_all(&self.efivars_dir);
         if let Some(p) = self.sqlite_db_path.parent() {
             fs::create_dir_all(p)?;
         }
@@ -211,6 +214,8 @@ pub struct EpochNodeAgent {
     pub active_initrd_path: String,
     pub watchdog: Option<HardwareWatchdog>,
     pub quota_reserve_override_bytes: Option<u64>,
+    pub last_activation_log: String,
+    pub active_lease_ns: u64,
 }
 
 impl EpochNodeAgent {
@@ -296,6 +301,8 @@ impl EpochNodeAgent {
             active_initrd_path: init_initrd_path.to_owned(),
             watchdog: None,
             quota_reserve_override_bytes: None,
+            last_activation_log: String::new(),
+            active_lease_ns: 30_000_000_000,
         })
     }
 
@@ -336,6 +343,22 @@ impl EpochNodeAgent {
             save_persistent_state(&layout.state_cbor_path, &mut st, &state_mac_key)?;
             st
         };
+
+        if !layout
+            .ramfs_secrets_root
+            .join(format!("gen-{}", state.prev_secret_epoch))
+            .exists()
+        {
+            let _ = prepare_empty_generation_secrets(
+                &layout.ramfs_secrets_root,
+                state.prev_secret_epoch,
+            );
+            let _ = atomic_flip_current_secrets(
+                &layout.current_secrets_link,
+                &layout.ramfs_secrets_root,
+                state.prev_secret_epoch,
+            );
+        }
 
         let mut active_kernel_path = "/nix/store/kernel/bzImage".to_owned();
         let mut active_initrd_path = "/nix/store/initrd/initrd".to_owned();
@@ -399,6 +422,8 @@ impl EpochNodeAgent {
             active_initrd_path,
             watchdog: None,
             quota_reserve_override_bytes: None,
+            last_activation_log: String::new(),
+            active_lease_ns: 30_000_000_000,
         })
     }
 
@@ -456,6 +481,33 @@ impl EpochNodeAgent {
         // A new StageManifest must strictly advance highest_tx_epoch
         self.check_epoch_fencing(tx_epoch, false)?;
 
+        if self.layout.root_dir == Path::new("/") {
+            if matches!(
+                self.state.phase,
+                AgentPhase::Activating | AgentPhase::Probing | AgentPhase::BarrierWait
+            ) && now_boottime_ns < self.state.lease_deadline_boottime_ns
+            {
+                return Err(EpochError::Io(
+                    "Another epoch activation is already running on this host.".into(),
+                ));
+            }
+            if let Ok(st) = Command::new("/run/current-system/sw/bin/systemctl")
+                .args([
+                    "is-active",
+                    "--quiet",
+                    "epoch-activate.service",
+                    "saturn-deploy.service",
+                    "nixos-rebuild-switch-to-configuration.service",
+                ])
+                .status()
+                && st.success()
+            {
+                return Err(EpochError::Io(
+                    "Another epoch activation is already running on this host.".into(),
+                ));
+            }
+        }
+
         let node_plan = plan
             .nodes
             .iter()
@@ -488,18 +540,37 @@ impl EpochNodeAgent {
         // Reconstruct and register every store path in the closure
         let mut staged_toplevel_disk: Option<PathBuf> = None;
         for m in manifests {
-            let unpacked = reconstruct_and_register_store_path(
+            let unpacked = match reconstruct_and_register_store_path(
                 &self.layout.store_dir,
                 &self.layout.sqlite_db_path,
                 m,
                 &self.chunk_index,
                 &self.trusted_store_keys,
-            )?;
+            ) {
+                Ok(u) => u,
+                Err(e) => {
+                    set_nix_store_writable(&self.layout.store_dir, false);
+                    return Err(e);
+                }
+            };
             if m.store_path == node_plan.toplevel_path
                 || unpacked.file_name() == Path::new(&node_plan.toplevel_path).file_name()
             {
                 staged_toplevel_disk = Some(unpacked);
             }
+        }
+        if !manifests.is_empty() {
+            flush_sqlite_conn_cache(&self.layout.sqlite_db_path);
+            set_nix_store_writable(&self.layout.store_dir, false);
+        }
+
+        if matches!(
+            self.state.phase,
+            AgentPhase::Idle | AgentPhase::Committed | AgentPhase::RolledBack
+        ) && let Ok(curr_link) = fs::read_link(&self.layout.run_current_system_link)
+        {
+            let resolved = fs::canonicalize(&curr_link).unwrap_or(curr_link);
+            self.state.prev_toplevel = resolved.to_string_lossy().into_owned();
         }
 
         let staged_path = staged_toplevel_disk.unwrap_or_else(|| {
@@ -535,6 +606,7 @@ impl EpochNodeAgent {
             let _ = fs::write(active_plan_path, plan_bytes);
         }
         self.active_plan = Some(plan);
+        self.last_activation_log.clear();
 
         Ok(gcroot)
     }
@@ -595,15 +667,29 @@ impl EpochNodeAgent {
             .clone()
             .ok_or_else(|| EpochError::Io("missing staged_toplevel in Staged phase".into()))?;
 
-        let gen_dir = prepare_generation_secrets(
-            Path::new(&staged_tl),
-            &self.layout.ramfs_secrets_root,
-            tx_epoch,
-            &self.node_id,
-            expected_archetype_toplevel,
-            &self.node_key,
-            tpm2_pcr_state,
-        )?;
+        let envelope_path = Path::new(&staged_tl)
+            .join("node-overlay")
+            .join("epoch-secrets.cbor");
+        let allow_empty_secrets = self
+            .active_plan
+            .as_ref()
+            .and_then(|p| p.nodes.iter().find(|n| n.node_id == self.node_id))
+            .map(|n| n.secrets_envelope_hash == [0u8; 32])
+            .unwrap_or(false);
+
+        let gen_dir = if !envelope_path.exists() && allow_empty_secrets {
+            prepare_empty_generation_secrets(&self.layout.ramfs_secrets_root, tx_epoch)?
+        } else {
+            prepare_generation_secrets(
+                Path::new(&staged_tl),
+                &self.layout.ramfs_secrets_root,
+                tx_epoch,
+                &self.node_id,
+                expected_archetype_toplevel,
+                &self.node_key,
+                tpm2_pcr_state,
+            )?
+        };
 
         self.state.phase = AgentPhase::Prepared;
         self.state.active_wave_id = Some(wave_id.to_owned());
@@ -617,10 +703,59 @@ impl EpochNodeAgent {
         Ok(gen_dir)
     }
 
+    fn seed_initial_system_profile_if_missing(
+        &self,
+        prev_toplevel: &Path,
+        staged_toplevel: &Path,
+    ) -> Result<(), EpochError> {
+        if self.layout.root_dir != Path::new("/") {
+            return Ok(());
+        }
+        if fs::symlink_metadata(&self.layout.system_profile_link).is_ok() {
+            return Ok(());
+        }
+        if !prev_toplevel.exists() {
+            return Ok(());
+        }
+        let prev_canon =
+            fs::canonicalize(prev_toplevel).unwrap_or_else(|_| prev_toplevel.to_path_buf());
+        let staged_canon =
+            fs::canonicalize(staged_toplevel).unwrap_or_else(|_| staged_toplevel.to_path_buf());
+        if prev_canon != staged_canon && highest_system_profile_gen(&self.layout.profiles_dir) == 0
+        {
+            let gen1_link = self.layout.profiles_dir.join("system-1-link");
+            replace_symlink(&gen1_link, &prev_canon)?;
+            atomic_replace_or_exchange_symlink(
+                &self.layout.system_profile_link,
+                Path::new("system-1-link"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn advance_live_system_profile(&self, target_toplevel: &Path) -> Result<(), EpochError> {
+        let target_canon =
+            fs::canonicalize(target_toplevel).unwrap_or_else(|_| target_toplevel.to_path_buf());
+        if let Ok(curr_canon) = fs::canonicalize(&self.layout.system_profile_link)
+            && curr_canon == target_canon
+        {
+            return Ok(());
+        }
+        let next_gen = highest_system_profile_gen(&self.layout.profiles_dir).saturating_add(1);
+        let link_name = format!("system-{next_gen}-link");
+        let new_gen_link = self.layout.profiles_dir.join(&link_name);
+        replace_symlink(&new_gen_link, &target_canon)?;
+        atomic_replace_or_exchange_symlink(
+            &self.layout.system_profile_link,
+            Path::new(&link_name),
+        )?;
+        Ok(())
+    }
+
     /// Step 3 (`PREPARED -> ACTIVATING -> PROBING`):
     /// Verify `coord_sig`, arm `/dev/watchdog` and `CLOCK_BOOTTIME` lease, stage `+1-0.conf` boot entry
     /// if kernel/initrd changed, atomically exchange `/run/epoch/current-secrets` via `RENAME_EXCHANGE`,
-    /// and execute `$staged_toplevel/bin/switch-to-configuration test`.
+    /// and execute `$staged_toplevel/bin/switch-to-configuration`.
     pub fn handle_activate_wave(
         &mut self,
         tx_epoch: u64,
@@ -664,6 +799,8 @@ impl EpochNodeAgent {
 
         // Arm monotonic `CLOCK_BOOTTIME` lease deadline and persist `Activating` BEFORE mutating live state
         let lease_ns = (lease_ttl_ms as u64).saturating_mul(1_000_000);
+        self.active_lease_ns = lease_ns;
+        self.last_activation_log.clear();
         self.state.phase = AgentPhase::Activating;
         self.state.active_wave_id = Some(wave_id.to_owned());
         self.state.lease_deadline_boottime_ns = now_boottime_ns.saturating_add(lease_ns);
@@ -686,7 +823,7 @@ impl EpochNodeAgent {
         let requires_reboot =
             new_kernel != self.active_kernel_path || new_initrd != self.active_initrd_path;
 
-        if requires_reboot {
+        if requires_reboot && self.layout.root_dir != Path::new("/") {
             arm_systemd_boot_single_trial(
                 &self.layout.boot_root,
                 &self.layout.efivars_dir,
@@ -707,31 +844,52 @@ impl EpochNodeAgent {
             return Err(e);
         }
 
-        // Execute speculative trial activation (`switch-to-configuration test`), updating `/run/current-system`
-        // WITHOUT mutating `/nix/var/nix/profiles/system` or `/boot/loader/loader.conf` default!
         let stage_gcroot = self
             .layout
             .gcroots_staging_dir
             .join(format!("tx-{tx_epoch}"));
-        let switch_bin = Path::new(&staged_tl)
-            .join("bin")
-            .join("switch-to-configuration");
-        if switch_bin.exists() {
-            let status = Command::new(&switch_bin)
-                .arg("test")
-                .env("EPOCH_STAGE_ROOT", &stage_gcroot)
-                .status();
-            match status {
-                Ok(st) if st.success() => {}
-                _ => {
-                    self.execute_rollback(tx_epoch, "SwitchToConfigurationTestFailed")?;
-                    return Err(EpochError::Io(
-                        "switch-to-configuration test returned non-zero".into(),
-                    ));
+        let prev_tl_path = Path::new(&self.state.prev_toplevel).to_path_buf();
+        let staged_tl_path = Path::new(&staged_tl);
+
+        let switch_action = match wave_id {
+            "dry-activate" => "dry-activate",
+            "boot" => {
+                self.seed_initial_system_profile_if_missing(&prev_tl_path, staged_tl_path)?;
+                if self.layout.root_dir == Path::new("/") {
+                    self.advance_live_system_profile(staged_tl_path)?;
                 }
+                "boot"
+            }
+            "switch" => {
+                self.seed_initial_system_profile_if_missing(&prev_tl_path, staged_tl_path)?;
+                "test"
+            }
+            _ => "test",
+        };
+
+        let switch_bin = staged_tl_path.join("bin").join("switch-to-configuration");
+        if switch_bin.exists() {
+            let (ok, out_log) =
+                run_switch_to_configuration(staged_tl_path, switch_action, Some(&stage_gcroot))?;
+            if !out_log.is_empty() {
+                self.last_activation_log = out_log;
+            }
+            if !ok {
+                let diag = if self.last_activation_log.is_empty() {
+                    format!("switch-to-configuration {switch_action} returned non-zero")
+                } else {
+                    format!(
+                        "switch-to-configuration {switch_action} returned non-zero:\n{}",
+                        self.last_activation_log
+                    )
+                };
+                self.execute_rollback(tx_epoch, "SwitchToConfigurationTestFailed")?;
+                return Err(EpochError::Io(diag));
             }
         }
-        replace_symlink(&self.layout.run_current_system_link, Path::new(&staged_tl))?;
+        if wave_id != "boot" && wave_id != "dry-activate" {
+            replace_symlink(&self.layout.run_current_system_link, staged_tl_path)?;
+        }
 
         self.state.phase = AgentPhase::Probing;
         save_persistent_state(
@@ -744,7 +902,8 @@ impl EpochNodeAgent {
     }
 
     /// Step 4 (`PROBING -> BARRIER_WAIT | ROLLED_BACK`):
-    /// Evaluate all 3 Multi-Signal Health Oracles. If healthy, enter `BARRIER_WAIT` under active lease;
+    /// Evaluate all 3 Multi-Signal Health Oracles and optional `$staged_toplevel/saturn-health-check`.
+    /// If healthy, enter `BARRIER_WAIT` under active lease;
     /// if unhealthy or lease expired, immediately roll back and return a signed negative `HealthAttestation`.
     pub fn evaluate_probes_and_attest(
         &mut self,
@@ -782,33 +941,76 @@ impl EpochNodeAgent {
             .unwrap_or_default();
 
         let oracle_res = evaluate_health_oracles(&probes_spec, probe_env);
-
-        if oracle_res.healthy {
-            self.state.phase = AgentPhase::BarrierWait;
-            save_persistent_state(
-                &self.layout.state_cbor_path,
-                &mut self.state,
-                &self.state_mac_key,
-            )?;
-            sign_health_attestation(
-                &self.node_key,
-                tx_epoch,
-                &wave_id,
-                &self.node_id,
-                true,
-                &oracle_res.diagnostic,
-            )
-        } else {
+        if !oracle_res.healthy {
             self.execute_rollback(tx_epoch, &oracle_res.diagnostic)?;
-            sign_health_attestation(
+            return sign_health_attestation(
                 &self.node_key,
                 tx_epoch,
                 &wave_id,
                 &self.node_id,
                 false,
                 &oracle_res.diagnostic,
-            )
+            );
         }
+
+        if wave_id != "dry-activate"
+            && wave_id != "boot"
+            && let Some(ref staged_tl) = self.state.staged_toplevel.clone()
+            && Path::new(staged_tl).join("saturn-health-check").exists()
+        {
+            let remaining_ns = self
+                .state
+                .lease_deadline_boottime_ns
+                .saturating_sub(clock_boottime_ns())
+                .max(1_000_000_000);
+            let hc_timeout_ns = self.active_lease_ns.min(remaining_ns).max(1_000_000_000);
+            let (hc_ok, hc_log) = run_saturn_health_check(Path::new(staged_tl), hc_timeout_ns)?;
+            if !hc_log.is_empty() {
+                if !self.last_activation_log.is_empty() {
+                    self.last_activation_log.push('\n');
+                }
+                self.last_activation_log.push_str(&hc_log);
+            }
+            if !hc_ok {
+                let reason = if self.last_activation_log.is_empty() {
+                    "SaturnHealthCheckFailed".to_owned()
+                } else {
+                    format!("SaturnHealthCheckFailed:\n{}", self.last_activation_log)
+                };
+                self.execute_rollback(tx_epoch, &reason)?;
+                return sign_health_attestation(
+                    &self.node_key,
+                    tx_epoch,
+                    &wave_id,
+                    &self.node_id,
+                    false,
+                    &reason,
+                );
+            }
+            // Refresh lease deadline after health check so coordinator has full lease window to confirm
+            self.state.lease_deadline_boottime_ns =
+                clock_boottime_ns().saturating_add(self.active_lease_ns);
+        }
+
+        self.state.phase = AgentPhase::BarrierWait;
+        save_persistent_state(
+            &self.layout.state_cbor_path,
+            &mut self.state,
+            &self.state_mac_key,
+        )?;
+        let diag = if self.last_activation_log.is_empty() {
+            oracle_res.diagnostic
+        } else {
+            format!("{}\n{}", oracle_res.diagnostic, self.last_activation_log)
+        };
+        sign_health_attestation(
+            &self.node_key,
+            tx_epoch,
+            &wave_id,
+            &self.node_id,
+            true,
+            &diag,
+        )
     }
 
     /// Check monotonic `CLOCK_BOOTTIME` lease expiration across `PREPARED`, `ACTIVATING`, `PROBING`, and `BARRIER_WAIT`.
@@ -1063,39 +1265,82 @@ impl EpochNodeAgent {
             .staged_toplevel
             .clone()
             .ok_or_else(|| EpochError::Io("missing staged_toplevel on commit".into()))?;
+        let staged_tl_path = Path::new(&staged_tl);
 
-        // 1. Create `/nix/var/nix/profiles/system-<tx_epoch>-link` and atomically swap `/nix/var/nix/profiles/system`
-        let new_gen_link = self
-            .layout
-            .profiles_dir
-            .join(format!("system-{tx_epoch}-link"));
-        replace_symlink(&new_gen_link, Path::new(&staged_tl))?;
-        atomic_replace_or_exchange_symlink(&self.layout.system_profile_link, &new_gen_link)?;
-        replace_symlink(&self.layout.run_current_system_link, Path::new(&staged_tl))?;
+        match wave_id {
+            "test" | "dry-activate" => {
+                // `test` and `dry-activate` never update `/nix/var/nix/profiles/system`
+            }
+            "boot" => {
+                if self.layout.root_dir == Path::new("/") {
+                    self.advance_live_system_profile(staged_tl_path)?;
+                } else {
+                    let new_gen_link = self
+                        .layout
+                        .profiles_dir
+                        .join(format!("system-{tx_epoch}-link"));
+                    replace_symlink(&new_gen_link, staged_tl_path)?;
+                    atomic_replace_or_exchange_symlink(
+                        &self.layout.system_profile_link,
+                        &new_gen_link,
+                    )?;
+                }
+            }
+            _ => {
+                if self.layout.root_dir == Path::new("/") {
+                    self.advance_live_system_profile(staged_tl_path)?;
+                } else {
+                    let new_gen_link = self
+                        .layout
+                        .profiles_dir
+                        .join(format!("system-{tx_epoch}-link"));
+                    replace_symlink(&new_gen_link, staged_tl_path)?;
+                    atomic_replace_or_exchange_symlink(
+                        &self.layout.system_profile_link,
+                        &new_gen_link,
+                    )?;
+                }
+                replace_symlink(&self.layout.run_current_system_link, staged_tl_path)?;
 
-        let switch_bin = Path::new(&staged_tl)
-            .join("bin")
-            .join("switch-to-configuration");
-        if switch_bin.exists() {
-            let _ = Command::new(&switch_bin).arg("switch").status();
+                let switch_bin = staged_tl_path.join("bin").join("switch-to-configuration");
+                if switch_bin.exists() {
+                    let (ok, out_log) =
+                        run_switch_to_configuration(staged_tl_path, "switch", None)?;
+                    if !out_log.is_empty() {
+                        if !self.last_activation_log.is_empty() {
+                            self.last_activation_log.push('\n');
+                        }
+                        self.last_activation_log.push_str(&out_log);
+                    }
+                    if !ok {
+                        self.execute_rollback(tx_epoch, "SwitchToConfigurationSwitchFailed")?;
+                        return Err(EpochError::Io(format!(
+                            "switch-to-configuration switch failed:\n{}",
+                            self.last_activation_log
+                        )));
+                    }
+                }
+            }
         }
 
         // 2. Promote `systemd-boot` trial entry (`+0-1.conf` / `+1-0.conf`) or write permanent `.conf` and update `loader.conf`
-        let commit_kernel = self
-            .staged_kernel_path
-            .clone()
-            .unwrap_or_else(|| self.active_kernel_path.clone());
-        let commit_initrd = self
-            .staged_initrd_path
-            .clone()
-            .unwrap_or_else(|| self.active_initrd_path.clone());
-        promote_or_write_systemd_boot_permanent(
-            &self.layout.boot_root,
-            tx_epoch,
-            &staged_tl,
-            &commit_kernel,
-            &commit_initrd,
-        )?;
+        if self.layout.root_dir != Path::new("/") {
+            let commit_kernel = self
+                .staged_kernel_path
+                .clone()
+                .unwrap_or_else(|| self.active_kernel_path.clone());
+            let commit_initrd = self
+                .staged_initrd_path
+                .clone()
+                .unwrap_or_else(|| self.active_initrd_path.clone());
+            promote_or_write_systemd_boot_permanent(
+                &self.layout.boot_root,
+                tx_epoch,
+                &staged_tl,
+                &commit_kernel,
+                &commit_initrd,
+            )?;
+        }
 
         // 3. Cryptographically zero-wipe retired secret generation `gen-<prev_secret_epoch>`
         let prev_sec_epoch = self.state.prev_secret_epoch;
@@ -1120,7 +1365,9 @@ impl EpochNodeAgent {
         }
 
         self.state.phase = AgentPhase::Committed;
-        self.state.prev_toplevel = staged_tl;
+        if wave_id != "boot" && wave_id != "dry-activate" {
+            self.state.prev_toplevel = staged_tl;
+        }
         self.state.prev_secret_epoch = tx_epoch;
         self.state.staged_toplevel = None;
         self.state.lease_deadline_boottime_ns = 0;
@@ -1155,7 +1402,7 @@ impl EpochNodeAgent {
     /// Deterministically revert both system closure and `/run/epoch/current-secrets` symlink to $G_t$,
     /// zero-wipe (`explicit_bzero`) `/run/epoch/secrets/gen-<tx_epoch>`, clean up staging GC roots
     /// and trial boot entries, disarm `/dev/watchdog`, and persist `RolledBack(tx_epoch)`.
-    pub fn execute_rollback(&mut self, tx_epoch: u64, _reason: &str) -> Result<(), EpochError> {
+    pub fn execute_rollback(&mut self, tx_epoch: u64, reason: &str) -> Result<(), EpochError> {
         let _zone = crate::tracy_zone!("plane4::execute_rollback", 0x9d174d);
         let prev_sec_epoch = self.state.prev_secret_epoch;
         let prev_tl = self.state.prev_toplevel.clone();
@@ -1179,7 +1426,7 @@ impl EpochNodeAgent {
         if prev_tl_path.exists() {
             let switch_bin = prev_tl_path.join("bin").join("switch-to-configuration");
             if switch_bin.exists() {
-                let _ = Command::new(&switch_bin).arg("test").status();
+                let _ = run_switch_to_configuration(prev_tl_path, "test", None);
             }
             let _ = replace_symlink(&self.layout.run_current_system_link, prev_tl_path);
         }
@@ -1191,14 +1438,26 @@ impl EpochNodeAgent {
 
         // 4. Remove staging GC root and any `+1-0.conf` / `+0-1.conf` trial boot entries
         remove_staging_gcroot(&self.layout.gcroots_staging_dir, tx_epoch);
-        let _ =
-            cleanup_failed_systemd_boot_trials(&self.layout.boot_root, &self.layout.efivars_dir);
+        if self.layout.root_dir != Path::new("/") {
+            let _ = cleanup_failed_systemd_boot_trials(
+                &self.layout.boot_root,
+                &self.layout.efivars_dir,
+            );
+        }
 
         // 5. Disarm `/dev/watchdog` and persist `RolledBack`
         if let Some(ref mut wd) = self.watchdog {
             wd.disarm();
         }
         self.watchdog = None;
+
+        if !reason.is_empty() {
+            if !self.last_activation_log.is_empty() {
+                self.last_activation_log.push('\n');
+            }
+            self.last_activation_log
+                .push_str(&format!("RolledBack: {reason}"));
+        }
 
         self.state.highest_tx_epoch = self.state.highest_tx_epoch.max(tx_epoch);
         self.state.phase = AgentPhase::RolledBack;
@@ -1282,6 +1541,45 @@ impl EpochNodeAgent {
     ) -> Result<EpochWireMsg, EpochError> {
         let _ = self.check_lease_expiration(now_boottime_ns);
         match msg {
+            EpochWireMsg::QueryMissingPathsReq {
+                tx_epoch,
+                store_paths,
+            } => {
+                let systemd_unit_active = self.layout.root_dir == Path::new("/")
+                    && Command::new("/run/current-system/sw/bin/systemctl")
+                        .args([
+                            "is-active",
+                            "--quiet",
+                            "epoch-activate.service",
+                            "saturn-deploy.service",
+                            "nixos-rebuild-switch-to-configuration.service",
+                        ])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                let active_deployment = systemd_unit_active
+                    || (matches!(
+                        self.state.phase,
+                        AgentPhase::Activating | AgentPhase::Probing | AgentPhase::BarrierWait
+                    ) && now_boottime_ns < self.state.lease_deadline_boottime_ns);
+                let current_system = fs::read_link(&self.layout.run_current_system_link)
+                    .ok()
+                    .and_then(|p| fs::canonicalize(&p).ok().or(Some(p)))
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| self.state.prev_toplevel.clone());
+                let missing_paths = query_missing_store_paths(
+                    &self.layout.store_dir,
+                    &self.layout.sqlite_db_path,
+                    &store_paths,
+                )?;
+                Ok(EpochWireMsg::QueryMissingPathsResp {
+                    tx_epoch,
+                    missing_paths,
+                    current_system,
+                    highest_tx_epoch: self.state.highest_tx_epoch,
+                    active_deployment,
+                })
+            }
             EpochWireMsg::StageManifest {
                 tx_epoch,
                 plan,
@@ -1501,22 +1799,36 @@ impl EpochNodeAgent {
                 coord_sig,
             } => match self.handle_commit_wave(tx_epoch, &wave_id, &attestation_hashes, &coord_sig)
             {
-                Ok(()) => sign_health_attestation(
-                    &self.node_key,
-                    tx_epoch,
-                    &wave_id,
-                    &self.node_id,
-                    true,
-                    "COMMITTED",
-                ),
-                Err(e) => sign_health_attestation(
-                    &self.node_key,
-                    tx_epoch,
-                    &wave_id,
-                    &self.node_id,
-                    false,
-                    &e.to_string(),
-                ),
+                Ok(()) => {
+                    let diag = if self.last_activation_log.is_empty() {
+                        "COMMITTED".to_owned()
+                    } else {
+                        format!("COMMITTED\n{}", self.last_activation_log)
+                    };
+                    sign_health_attestation(
+                        &self.node_key,
+                        tx_epoch,
+                        &wave_id,
+                        &self.node_id,
+                        true,
+                        &diag,
+                    )
+                }
+                Err(e) => {
+                    let diag = if self.last_activation_log.is_empty() {
+                        e.to_string()
+                    } else {
+                        format!("{e}\n{}", self.last_activation_log)
+                    };
+                    sign_health_attestation(
+                        &self.node_key,
+                        tx_epoch,
+                        &wave_id,
+                        &self.node_id,
+                        false,
+                        &diag,
+                    )
+                }
             },
             EpochWireMsg::AbortWave {
                 tx_epoch,
@@ -1547,15 +1859,162 @@ impl EpochNodeAgent {
                     .active_wave_id
                     .clone()
                     .unwrap_or_else(|| "default".into());
+                let diag = if self.state.phase == AgentPhase::RolledBack
+                    && !self.last_activation_log.is_empty()
+                {
+                    format!("ROLLED_BACK\n{}", self.last_activation_log)
+                } else {
+                    self.state.phase.as_str().to_owned()
+                };
                 sign_health_attestation(
                     &self.node_key,
                     self.state.highest_tx_epoch,
                     &wave,
                     &self.node_id,
                     self.state.phase != AgentPhase::RolledBack,
-                    self.state.phase.as_str(),
+                    &diag,
                 )
             }
+        }
+    }
+}
+
+fn highest_system_profile_gen(profiles_dir: &Path) -> u64 {
+    let mut highest = 0u64;
+    if let Ok(entries) = fs::read_dir(profiles_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if let Some(mid) = s
+                .strip_prefix("system-")
+                .and_then(|r| r.strip_suffix("-link"))
+                && let Ok(n) = mid.parse::<u64>()
+                && n > highest
+            {
+                highest = n;
+            }
+        }
+    }
+    highest
+}
+
+fn build_activation_path_env(toplevel: &Path) -> String {
+    format!(
+        "/run/wrappers/bin:{}/sw/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/bin:/usr/bin",
+        toplevel.display()
+    )
+}
+
+fn run_switch_to_configuration(
+    toplevel: &Path,
+    action: &str,
+    stage_gcroot: Option<&Path>,
+) -> Result<(bool, String), EpochError> {
+    let switch_bin = toplevel.join("bin").join("switch-to-configuration");
+    let mut cmd = Command::new(&switch_bin);
+    cmd.arg(action);
+    cmd.env("PATH", build_activation_path_env(toplevel));
+    let locale_archive = toplevel.join("sw/lib/locale/locale-archive");
+    if locale_archive.exists() {
+        cmd.env("LOCALE_ARCHIVE", &locale_archive);
+    }
+    if let Some(gc) = stage_gcroot {
+        cmd.env("EPOCH_STAGE_ROOT", gc);
+    }
+    if Path::new("/").exists() {
+        cmd.current_dir("/");
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| EpochError::Io(format!("failed to spawn {}: {e}", switch_bin.display())))?;
+    let mut combined = String::new();
+    let stdout_s = String::from_utf8_lossy(&output.stdout);
+    let stderr_s = String::from_utf8_lossy(&output.stderr);
+    if !stdout_s.trim().is_empty() {
+        combined.push_str(stdout_s.trim());
+    }
+    if !stderr_s.trim().is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(stderr_s.trim());
+    }
+    Ok((output.status.success(), combined))
+}
+
+fn run_saturn_health_check(toplevel: &Path, timeout_ns: u64) -> Result<(bool, String), EpochError> {
+    use std::os::unix::process::CommandExt as _;
+    let hc_path = toplevel.join("saturn-health-check");
+    if !hc_path.exists() {
+        return Ok((true, String::new()));
+    }
+    let mut cmd = Command::new(&hc_path);
+    cmd.env("PATH", build_activation_path_env(toplevel));
+    let locale_archive = toplevel.join("sw/lib/locale/locale-archive");
+    if locale_archive.exists() {
+        cmd.env("LOCALE_ARCHIVE", &locale_archive);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.process_group(0);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| EpochError::Io(format!("failed to spawn {}: {e}", hc_path.display())))?;
+    let deadline_ns = clock_boottime_ns().saturating_add(timeout_ns);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| EpochError::Io(e.to_string()))?;
+                let mut combined = String::new();
+                let stdout_s = String::from_utf8_lossy(&output.stdout);
+                let stderr_s = String::from_utf8_lossy(&output.stderr);
+                if !stdout_s.trim().is_empty() {
+                    combined.push_str(stdout_s.trim());
+                }
+                if !stderr_s.trim().is_empty() {
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str(stderr_s.trim());
+                }
+                return Ok((output.status.success(), combined));
+            }
+            Ok(None) => {
+                if clock_boottime_ns() >= deadline_ns {
+                    let pid = child.id() as i32;
+                    if pid > 0 {
+                        unsafe {
+                            let _ = libc::kill(-pid, libc::SIGKILL);
+                        }
+                    }
+                    let _ = child.kill();
+                    let output = child.wait_with_output().ok();
+                    let mut combined = String::new();
+                    if let Some(out) = output {
+                        let stdout_s = String::from_utf8_lossy(&out.stdout);
+                        let stderr_s = String::from_utf8_lossy(&out.stderr);
+                        if !stdout_s.trim().is_empty() {
+                            combined.push_str(stdout_s.trim());
+                        }
+                        if !stderr_s.trim().is_empty() {
+                            if !combined.is_empty() {
+                                combined.push('\n');
+                            }
+                            combined.push_str(stderr_s.trim());
+                        }
+                    }
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str("saturn-health-check timed out");
+                    return Ok((false, combined));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(EpochError::Io(e.to_string())),
         }
     }
 }

@@ -446,6 +446,73 @@ pub fn verify_nix_store_path_sig(
     })
 }
 
+/// Parse a Nix Ed25519 secret signing key (`<key-name>:<base64(64-byte seed||pub)>`) into `(key_name, Ed25519Identity)`.
+pub fn parse_nix_secret_key(raw: &str) -> Result<(String, Ed25519Identity), EpochError> {
+    let trimmed = raw.trim();
+    let (name, b64) = trimmed.split_once(':').ok_or_else(|| {
+        EpochError::CryptoVerificationFailed(
+            "expected Nix secret key in '<name>:<base64>' format".into(),
+        )
+    })?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EpochError::CryptoVerificationFailed(
+            "Nix secret key name cannot be empty".into(),
+        ));
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| {
+            EpochError::CryptoVerificationFailed(format!("invalid base64 in Nix secret key: {e}"))
+        })?;
+    if decoded.len() != 64 && decoded.len() != 32 {
+        return Err(EpochError::CryptoVerificationFailed(format!(
+            "expected 64-byte (or 32-byte seed) Nix Ed25519 secret key, got {} bytes",
+            decoded.len()
+        )));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&decoded[..32]);
+    let id = Ed25519Identity::from_seed(seed)?;
+    seed.zeroize();
+    if decoded.len() == 64 && id.public_key != decoded[32..64] {
+        return Err(EpochError::CryptoVerificationFailed(
+            "Nix secret key embedded public half does not match Ed25519 seed".into(),
+        ));
+    }
+    Ok((name.to_owned(), id))
+}
+
+/// Parse a Nix Ed25519 public signing key (`<key-name>:<base64(32-byte pub)>`) into `(key_name, Ed25519Pub)`.
+pub fn parse_nix_public_key(raw: &str) -> Result<(String, Ed25519Pub), EpochError> {
+    let trimmed = raw.trim();
+    let (name, b64) = trimmed.split_once(':').ok_or_else(|| {
+        EpochError::CryptoVerificationFailed(
+            "expected Nix public key in '<name>:<base64>' format".into(),
+        )
+    })?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EpochError::CryptoVerificationFailed(
+            "Nix public key name cannot be empty".into(),
+        ));
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| {
+            EpochError::CryptoVerificationFailed(format!("invalid base64 in Nix public key: {e}"))
+        })?;
+    if decoded.len() != 32 {
+        return Err(EpochError::CryptoVerificationFailed(format!(
+            "expected 32-byte Nix Ed25519 public key, got {} bytes",
+            decoded.len()
+        )));
+    }
+    let mut pub_key = [0u8; 32];
+    pub_key.copy_from_slice(&decoded);
+    Ok((name.to_owned(), pub_key))
+}
+
 // Plane 3: Secret Envelope Cryptography (ChaCha20-Poly1305 + AAD + Host Key & TPM2 PCR Wrapping)
 
 /// Compute Additional Authenticated Data binding the secret bundle to `(node_id, archetype_toplevel)`:

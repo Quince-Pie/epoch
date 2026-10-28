@@ -206,6 +206,25 @@ pub fn prepare_generation_secrets_from_bundle(
     Ok(gen_dir)
 }
 
+/// Prepare an empty `<ramfs_root>/gen-<tx_epoch>` (`0700`) directory when a node's signed plan
+/// declares no secret envelope (`secrets_envelope_hash == [0u8; 32]`).
+pub fn prepare_empty_generation_secrets(
+    ramfs_root: &Path,
+    tx_epoch: u64,
+) -> Result<PathBuf, EpochError> {
+    ensure_ramfs_secrets_mount(ramfs_root)?;
+    let gen_dir = ramfs_root.join(format!("gen-{tx_epoch}"));
+    if gen_dir.exists() {
+        zero_wipe_secret_generation(ramfs_root, tx_epoch)?;
+    }
+    fs::create_dir_all(&gen_dir)?;
+    fs::set_permissions(&gen_dir, fs::Permissions::from_mode(0o700))?;
+    if let Ok(dir_file) = fs::File::open(&gen_dir) {
+        let _ = dir_file.sync_all();
+    }
+    Ok(gen_dir)
+}
+
 /// Phase 2 (`ACTIVATING`): Atomically flip `<current_secrets_link>` to point to
 /// `<ramfs_root>/gen-<target_epoch>` using Linux `syscall(SYS_renameat2, ..., RENAME_EXCHANGE)`.
 ///

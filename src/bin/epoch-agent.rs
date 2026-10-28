@@ -2,9 +2,13 @@
 
 use clap::{Parser, Subcommand};
 use epoch::cbor;
-use epoch::crypto::Ed25519Identity;
-use epoch::p2p_quic::{bind_quic_endpoint, read_quic_wire_msg, write_quic_wire_msg};
-use epoch::plane3_secrets::unseal_boot_secrets;
+use epoch::crypto::{Ed25519Identity, parse_nix_public_key};
+use epoch::p2p_quic::{
+    bind_quic_endpoint_with_pinned_peers, read_quic_wire_msg, write_quic_wire_msg,
+};
+use epoch::plane3_secrets::{
+    atomic_flip_current_secrets, prepare_empty_generation_secrets, unseal_boot_secrets,
+};
 use epoch::plane4_state::{
     AgentFilesystemLayout, EpochNodeAgent, clock_boottime_ns, clock_realtime_utc_s,
 };
@@ -74,11 +78,14 @@ enum Commands {
         store_pub_hex: Option<String>,
         #[arg(long, default_value = "cache.epoch.internal-1")]
         store_key_name: String,
+        /// Trusted Nix Ed25519 public key (`<name>:<base64>`) for mTLS, plan signing, and store path verification
+        #[arg(long = "trusted-public-key")]
+        trusted_public_keys: Vec<String>,
         #[arg(long)]
         once: bool,
         #[arg(long)]
         max_requests: Option<usize>,
-        #[arg(long, default_value_t = 5000)]
+        #[arg(long, default_value_t = 60000)]
         request_timeout_ms: u64,
     },
 }
@@ -124,20 +131,27 @@ fn main() -> anyhow::Result<()> {
             boot_epoch,
             host_key_seed_hex,
         } => {
-            let host_id = Ed25519Identity::from_seed_hex_or_default(
-                host_key_seed_hex.as_deref(),
-                [0x42; 32],
-            )?;
-            let gen_dir = unseal_boot_secrets(
-                &system_root,
-                &ramfs_root,
-                &current_secrets_link,
-                boot_epoch,
-                &node_id,
-                &archetype_toplevel,
-                &host_id,
-                None,
-            )?;
+            let envelope_path = system_root.join("node-overlay").join("epoch-secrets.cbor");
+            let gen_dir = if envelope_path.exists() {
+                let host_id = Ed25519Identity::from_seed_hex_or_default(
+                    host_key_seed_hex.as_deref(),
+                    [0x42; 32],
+                )?;
+                unseal_boot_secrets(
+                    &system_root,
+                    &ramfs_root,
+                    &current_secrets_link,
+                    boot_epoch,
+                    &node_id,
+                    &archetype_toplevel,
+                    &host_id,
+                    None,
+                )?
+            } else {
+                let dir = prepare_empty_generation_secrets(&ramfs_root, boot_epoch)?;
+                atomic_flip_current_secrets(&current_secrets_link, &ramfs_root, boot_epoch)?;
+                dir
+            };
             println!("Unsealed early-boot secrets into {}", gen_dir.display());
         }
         Commands::DebugSetQuotaReserveMib { mib } => {
@@ -154,6 +168,7 @@ fn main() -> anyhow::Result<()> {
             coordinator_pub_hex,
             store_pub_hex,
             store_key_name,
+            trusted_public_keys,
             once,
             max_requests,
             request_timeout_ms,
@@ -167,20 +182,43 @@ fn main() -> anyhow::Result<()> {
                 host_key_seed_hex.as_deref(),
                 [0x42; 32],
             )?;
-            let coord_pub = match coordinator_pub_hex {
-                Some(ref h) => parse_pub_hex(h)?,
-                None => Ed25519Identity::from_seed([0x11; 32])?.public_key,
+            let mut coord_pubs = Vec::new();
+            let mut store_keys = Vec::new();
+            for raw_tk in &trusted_public_keys {
+                for token in raw_tk.split_whitespace() {
+                    let (k_name, k_pub) = parse_nix_public_key(token)?;
+                    if !coord_pubs.contains(&k_pub) {
+                        coord_pubs.push(k_pub);
+                    }
+                    store_keys.push((k_name, k_pub));
+                }
+            }
+            if let Some(ref h) = coordinator_pub_hex {
+                let pk = parse_pub_hex(h)?;
+                if !coord_pubs.contains(&pk) {
+                    coord_pubs.push(pk);
+                }
+            }
+            if let Some(ref h) = store_pub_hex {
+                let pk = parse_pub_hex(h)?;
+                store_keys.push((store_key_name.clone(), pk));
+            }
+            let pinned_peers = if !coord_pubs.is_empty() {
+                Some(coord_pubs.clone())
+            } else {
+                None
             };
-            let store_pub = match store_pub_hex {
-                Some(ref h) => parse_pub_hex(h)?,
-                None => Ed25519Identity::from_seed([0x22; 32])?.public_key,
-            };
+            if coord_pubs.is_empty() {
+                coord_pubs.push(Ed25519Identity::from_seed([0x11; 32])?.public_key);
+            }
+            if store_keys.is_empty() {
+                store_keys.push((
+                    store_key_name,
+                    Ed25519Identity::from_seed([0x22; 32])?.public_key,
+                ));
+            }
             let mut agent = EpochNodeAgent::open_or_init_daemon(
-                &node_id,
-                agent_key,
-                vec![coord_pub],
-                vec![(store_key_name, store_pub)],
-                layout,
+                &node_id, agent_key, coord_pubs, store_keys, layout,
             )?;
             let listen_addr: SocketAddr = listen.parse()?;
             let target_reqs = if once { Some(1) } else { max_requests };
@@ -190,7 +228,8 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(async move {
-                let (endpoint, bound_addr) = bind_quic_endpoint(listen_addr, &host_id)?;
+                let (endpoint, bound_addr) =
+                    bind_quic_endpoint_with_pinned_peers(listen_addr, &host_id, pinned_peers)?;
                 println!(
                     "epoch-agent listening on {} (mlockall={}, oom_score_adj={})",
                     bound_addr, mlocked, oom_set

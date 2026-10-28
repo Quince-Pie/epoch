@@ -50,6 +50,8 @@ in
         "network-pre.target"
         "systemd-udevd.service"
       ];
+      restartIfChanged = false;
+      stopIfChanged = false;
       unitConfig.DefaultDependencies = false;
       serviceConfig = {
         Type = "oneshot";
@@ -79,6 +81,8 @@ in
       ];
       requires = [ "epoch-early-unseal.service" ];
       wantedBy = [ "multi-user.target" ];
+      restartIfChanged = false;
+      stopIfChanged = false;
       serviceConfig = {
         Type = "simple";
         Restart = "always";

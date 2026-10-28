@@ -274,6 +274,17 @@ pub enum EpochWireMsg {
         #[serde(with = "serde_sig64")]
         coord_sig: Ed25519Sig,
     },
+    QueryMissingPathsReq {
+        tx_epoch: u64,
+        store_paths: Vec<String>,
+    },
+    QueryMissingPathsResp {
+        tx_epoch: u64,
+        missing_paths: Vec<String>,
+        current_system: String,
+        highest_tx_epoch: u64,
+        active_deployment: bool,
+    },
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
